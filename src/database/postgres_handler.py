@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
+from datetime import datetime
 from typing import Generator
 
 import psycopg2
@@ -263,6 +264,99 @@ class PostgresHandler:
                 f"DO NOTHING;"
             )
         return "\n".join(lines)
+
+    # ------------------------------------------------------------------
+    # Reads
+    # ------------------------------------------------------------------
+
+    def fetch_by_nmi(
+        self,
+        nmi: str,
+        from_dt: datetime | None = None,
+        to_dt: datetime | None = None,
+        limit: int = 10_000,
+    ) -> list[MeterReading]:
+        """
+        Fetch readings for *nmi* optionally filtered by a time range.
+
+        Args:
+            nmi:     National Metering Identifier (exact match, max 10 chars).
+            from_dt: Inclusive lower bound on the interval timestamp.
+            to_dt:   Inclusive upper bound on the interval timestamp.
+            limit:   Maximum number of rows returned (default 10 000).
+
+        Returns:
+            List of :class:`MeterReading` ordered by timestamp ascending.
+        """
+        self.connect()
+
+        conditions: list[str] = ["nmi = %s"]
+        params: list = [nmi]
+
+        if from_dt is not None:
+            conditions.append('"timestamp" >= %s')
+            params.append(from_dt)
+        if to_dt is not None:
+            conditions.append('"timestamp" <= %s')
+            params.append(to_dt)
+
+        sql = (
+            f'SELECT id, nmi, "timestamp", consumption '
+            f"FROM meter_readings "
+            f"WHERE {' AND '.join(conditions)} "
+            f'ORDER BY "timestamp" ASC '
+            f"LIMIT %s;"
+        )
+        params.append(limit)
+
+        readings: list[MeterReading] = []
+        with self._get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, params)
+                for row_id, row_nmi, row_ts, row_con in cur.fetchall():
+                    readings.append(
+                        MeterReading(
+                            id=str(row_id),
+                            nmi=row_nmi,
+                            timestamp=row_ts,
+                            consumption=row_con,
+                        )
+                    )
+
+        logger.debug(
+            "postgres.fetch_by_nmi",
+            nmi=nmi,
+            from_dt=from_dt,
+            to_dt=to_dt,
+            rows=len(readings),
+        )
+        return readings
+
+    def fetch_nmis(self) -> list[str]:
+        """Return a sorted list of all distinct NMIs in the table."""
+        self.connect()
+        with self._get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT DISTINCT nmi FROM meter_readings ORDER BY nmi;")
+                return [row[0] for row in cur.fetchall()]
+
+    def fetch_date_range(self, nmi: str) -> tuple[datetime | None, datetime | None]:
+        """
+        Return (earliest_timestamp, latest_timestamp) for *nmi*.
+        Returns (None, None) if the NMI has no data.
+        """
+        self.connect()
+        with self._get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    'SELECT MIN("timestamp"), MAX("timestamp") '
+                    "FROM meter_readings WHERE nmi = %s;",
+                    (nmi,),
+                )
+                row = cur.fetchone()
+                if row:
+                    return row[0], row[1]
+                return None, None
 
     # ------------------------------------------------------------------
     # Healthcheck
