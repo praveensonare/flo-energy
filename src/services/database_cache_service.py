@@ -48,6 +48,7 @@ from typing import Optional
 
 import structlog
 
+from src.config import settings
 from src.database.postgres_handler import PostgresHandler
 from src.models.meter_reading import MeterReading
 
@@ -145,20 +146,79 @@ class DatabaseCacheService:
     cache.  Otherwise the DB is queried, results are merged into the cache,
     and the response is built from the unified view.
 
+    DB connection
+    -------------
+    Targets **localhost:5432** by default.  Use :meth:`from_local` for the
+    common local-development / tech-assessment case, or pass a custom
+    :class:`PostgresHandler` for production.
+
     Usage::
 
-        handler = PostgresHandler.from_env()
-        svc = DatabaseCacheService(handler)
-        svc.initialize()        # ensure schema + warm cache (optional)
+        # Simplest — local Postgres on port 5432
+        svc = DatabaseCacheService.from_local()
+        svc.initialize()   # CREATE TABLE IF NOT EXISTS — safe on existing DB
 
         result = svc.write(readings)
         result = svc.query_by_nmi("NEM1201009")
         result = svc.query_by_nmi("NEM1201009",
-                                   from_dt=datetime(2026, 3, 1),
-                                   to_dt=datetime(2026, 3, 31))
+                                   from_dt=datetime(2005, 3, 1),
+                                   to_dt=datetime(2005, 3, 31))
         summary = svc.cache_stats()
         svc.close()
     """
+
+    @classmethod
+    def from_env(cls) -> "DatabaseCacheService":
+        """
+        Create a service using the application :mod:`src.config` settings.
+
+        Reads from ``.env`` (or environment variables) via pydantic-settings.
+        This is the **recommended factory** for all environments.
+
+        Example::
+
+            svc = DatabaseCacheService.from_env()
+            svc.initialize()   # CREATE TABLE IF NOT EXISTS
+        """
+        return cls(PostgresHandler.from_env())
+
+    @classmethod
+    def from_local(
+        cls,
+        *,
+        host: str | None = None,
+        port: int | None = None,
+        dbname: str | None = None,
+        user: str | None = None,
+        password: str | None = None,
+    ) -> "DatabaseCacheService":
+        """
+        Create a service backed by a local PostgreSQL instance.
+
+        All parameters default to values from :mod:`src.config` settings
+        (which in turn fall back to ``localhost:5432/meter_db``).  Keyword
+        arguments override only the fields you specify.
+
+        The table is **not** automatically created here — call
+        :meth:`initialize` after construction.
+
+        Example::
+
+            # Uses .env / env-var config, falls back to localhost:5432/meter_db
+            svc = DatabaseCacheService.from_local()
+            svc.initialize()
+
+            # Override just the database name
+            svc = DatabaseCacheService.from_local(dbname="flo_energy")
+        """
+        db = PostgresHandler.from_local(
+            host=host or settings.pg_host,
+            port=str(port or settings.pg_port),
+            dbname=dbname or settings.pg_database,
+            user=user or settings.pg_user,
+            password=password or settings.pg_password,
+        )
+        return cls(db)
 
     def __init__(self, db: PostgresHandler) -> None:
         self._db = db
@@ -183,14 +243,34 @@ class DatabaseCacheService:
 
     def initialize(self, *, warm_nmis: list[str] | None = None) -> None:
         """
-        Ensure the DB schema exists and optionally warm the cache.
+        Prepare the service for use.
+
+        Steps
+        -----
+        1. Calls :meth:`PostgresHandler.ensure_schema` which runs
+           ``CREATE TABLE IF NOT EXISTS meter_readings (…)``.
+           **The table is never dropped or truncated.**  Existing data is
+           preserved unconditionally.
+        2. Optionally warms the in-memory cache for the specified NMIs
+           by pre-loading their readings from PostgreSQL.
 
         Args:
-            warm_nmis: If provided, pre-load these NMIs into the cache.
-                       Pass an empty list or omit to skip warming.
+            warm_nmis: NMI list to pre-load.  ``None`` / ``[]`` skips warming.
+
+        Example::
+
+            # Just ensure the table exists
+            svc.initialize()
+
+            # Ensure table exists AND pre-load two NMIs
+            svc.initialize(warm_nmis=["NEM1201009", "NEM1201010"])
         """
-        self._db.ensure_schema()
-        logger.info("db_cache.initialized")
+        created = self._db.ensure_schema()
+        logger.info(
+            "db_cache.initialized",
+            table_created=created,
+            table_action="created" if created else "already_exists_preserved",
+        )
 
         if warm_nmis:
             for nmi in warm_nmis:

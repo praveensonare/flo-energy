@@ -40,6 +40,7 @@ from typing import Optional
 
 import structlog
 
+from src.config import settings
 from src.models.meter_reading import MeterReading, QualityMethod
 from src.parsers.base_parser import ParserResult
 from src.parsers.nem12_parser import NEM12Parser
@@ -214,10 +215,13 @@ class NEM12ProcessingService:
     def __init__(
         self,
         shared_readings: SharedReadingList,
-        max_queue_size: int = 100,
+        max_queue_size: int | None = None,
     ) -> None:
         self._shared = shared_readings
-        self._queue: Queue[str | None] = Queue(maxsize=max_queue_size)
+        self._queue: Queue[str | None] = Queue(
+            maxsize=max_queue_size if max_queue_size is not None
+            else settings.nem12_queue_max_size
+        )
         self._thread = threading.Thread(
             target=self._run,
             name="NEM12ProcessingService",
