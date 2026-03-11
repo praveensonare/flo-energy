@@ -17,7 +17,6 @@ Agentic loop:
 from __future__ import annotations
 
 import json
-import os
 import time
 from typing import Any
 
@@ -25,6 +24,7 @@ import anthropic
 import structlog
 
 from src.agent.tools import TOOL_DEFINITIONS, ToolRegistry
+from src.config import settings
 from src.database.postgres_handler import PostgresHandler
 from src.notifications.notification_service import (
     NotificationLevel,
@@ -85,7 +85,7 @@ class MeterReadingAgent:
         metrics_port: int | None = None,
     ) -> None:
         self._client = anthropic.Anthropic(
-            api_key=api_key or os.environ["ANTHROPIC_API_KEY"]
+            api_key=api_key or settings.anthropic_api_key
         )
         self._tools = ToolRegistry(
             db_handler=db_handler,
@@ -105,16 +105,16 @@ class MeterReadingAgent:
     def from_env(cls) -> "MeterReadingAgent":
         """Construct agent from environment variables."""
         configure_logging(
-            log_level=os.getenv("LOG_LEVEL", "INFO"),
-            json_output=os.getenv("LOG_FORMAT", "json") == "json",
+            log_level=settings.log_level,
+            json_output=settings.log_format == "json",
         )
         return cls(
-            api_key=os.getenv("ANTHROPIC_API_KEY"),
+            api_key=settings.anthropic_api_key,
             db_handler=PostgresHandler.from_env(),
             notification_service=NotificationService.default(),
-            enable_sql_output=os.getenv("ENABLE_SQL_OUTPUT", "false").lower() == "true",
-            sql_output_path=os.getenv("SQL_OUTPUT_PATH"),
-            metrics_port=int(os.getenv("METRICS_PORT", "0")) or None,
+            enable_sql_output=settings.enable_sql_output,
+            sql_output_path=settings.sql_output_path,
+            metrics_port=settings.metrics_port or None,
         )
 
     # ------------------------------------------------------------------
