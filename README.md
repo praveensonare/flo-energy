@@ -85,14 +85,18 @@ docker compose up postgres -d
 # 3. Add your API key to .env
 echo "ANTHROPIC_API_KEY=sk-ant-..." >> .env
 
-# 4. Run
+# 4. Run a CSV file
 python main.py data/sample_nem12.csv
 
-# Multiple files at once (run in parallel)
-python main.py data/file1.csv data/file2.csv data/file3.csv
+# Run a ZIP file (contains a NEM12/NEM13 CSV inside)
+python main.py data/sample_nem12.zip
+
+# Multiple files at once — CSV and ZIP can be mixed (run in parallel)
+python main.py data/file1.csv data/file2.zip data/file3.csv
 
 # Save SQL output too
 python main.py data/sample_nem12.csv --output output/inserts.sql
+python main.py data/sample_nem12.zip --output output/inserts.sql
 ```
 
 No need to create the database table — it's created automatically on first run.
@@ -105,22 +109,27 @@ No need to create the database table — it's created automatically on first run
 # 1. Start Postgres
 docker compose up postgres -d
 
-# 2. Run the agent against the sample file
+# 2. Run the agent against a CSV file
 docker compose run --rm \
   -e ANTHROPIC_API_KEY="sk-ant-..." \
   agent /data/sample_nem12.csv
 
-# 3. Multiple files
+# 3. Run the agent against a ZIP file (NEM12/NEM13 CSV inside)
 docker compose run --rm \
   -e ANTHROPIC_API_KEY="sk-ant-..." \
-  agent /data/file1.csv /data/file2.csv
+  agent /data/sample_nem12.zip
 
-# 4. Save SQL output
+# 4. Multiple files — CSV and ZIP can be mixed
+docker compose run --rm \
+  -e ANTHROPIC_API_KEY="sk-ant-..." \
+  agent /data/file1.csv /data/file2.zip
+
+# 5. Save SQL output
 docker compose run --rm \
   -e ANTHROPIC_API_KEY="sk-ant-..." \
   agent /data/sample_nem12.csv --output /output/inserts.sql
 
-# 5. Lightweight runner (no API key needed)
+# 6. Lightweight runner (no API key needed)
 docker compose run --rm agent python process_nem12.py /data/sample_nem12.csv
 ```
 
@@ -205,7 +214,6 @@ flo-energy/
     ├── observability/
     │   └── metrics.py               structlog + Prometheus
     └── agent/
-        ├── langchain_tools.py       async @tool functions (LangChain)
-        ├── langchain_agent.py       LangGraph ReAct agent, asyncio.gather
-        └── meter_reading_agent.py   legacy raw-Anthropic agent (reference)
+        ├── langchain_tools.py       async @tool functions — CSV and ZIP input supported
+        └── langchain_agent.py       LangGraph ReAct agent, asyncio.gather
 ```
