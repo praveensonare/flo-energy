@@ -34,8 +34,15 @@ import time
 from typing import Any
 
 import structlog
-from langchain_anthropic import ChatAnthropic
-from langgraph.prebuilt import create_react_agent
+
+try:
+    from langchain_anthropic import ChatAnthropic
+    from langgraph.prebuilt import create_react_agent
+except ImportError as _err:
+    raise ImportError(
+        f"LangChain dependencies not installed: {_err}\n"
+        "Run:  pip install -r requirements.txt"
+    ) from _err
 
 from src.agent.langchain_tools import ALL_TOOLS
 from src.config import settings
