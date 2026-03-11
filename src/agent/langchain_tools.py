@@ -302,6 +302,10 @@ async def write_to_database(session_id: str, batch_size: int = 1000) -> str:
 
     loop = asyncio.get_running_loop()
     try:
+        # Ensure the table exists before writing; CREATE TABLE IF NOT EXISTS
+        # is a no-op when the table already exists, so this is always safe.
+        await loop.run_in_executor(None, _get_db().ensure_schema)
+
         # atomic_bulk_insert wraps all batches in ONE PostgreSQL transaction:
         #   Atomicity  – all commit together or all roll back
         #   Consistency – UNIQUE(nmi, timestamp) constraint enforced
