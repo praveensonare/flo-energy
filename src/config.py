@@ -1,10 +1,9 @@
 """
 Application configuration — single source of truth for all settings.
 
-Loaded **once** at import time from (in priority order):
-  1. Actual environment variables  (highest priority)
-  2. ``.env`` file in the project root
-  3. Built-in defaults             (lowest priority)
+All settings are loaded from the ``.env`` file in the project root.
+The ``.env`` file is the highest-priority source; built-in defaults are
+the fallback when a key is absent from the file.
 
 Usage::
 
@@ -14,16 +13,15 @@ Usage::
     print(settings.database_url)     # full DSN, assembled if not set explicitly
     print(settings.log_level)        # "INFO"
 
-All config keys map directly to environment variable names (case-insensitive).
-See ``.env.example`` for documentation of each variable.
+All config keys map directly to variable names in ``.env`` (case-insensitive).
 """
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple, Type
 
 from pydantic import Field, computed_field, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 
 # Resolve .env relative to this file's parent-parent (project root)
 _PROJECT_ROOT = Path(__file__).parent.parent
@@ -127,6 +125,22 @@ class Settings(BaseSettings):
             f"postgresql://{self.pg_user}:{self.pg_password}"
             f"@{self.pg_host}:{self.pg_port}/{self.pg_database}"
         )
+
+    # ------------------------------------------------------------------
+    # Source priority: .env file wins over OS environment variables
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: Type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        secrets_settings: PydanticBaseSettingsSource,
+    ) -> Tuple[PydanticBaseSettingsSource, ...]:
+        # dotenv (.env) has highest priority; OS env vars are a fallback
+        return dotenv_settings, env_settings, init_settings, secrets_settings
 
     @model_validator(mode="after")
     def _validate_log_level(self) -> "Settings":

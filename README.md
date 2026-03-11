@@ -19,8 +19,9 @@ Built with **Python 3.12**, **psycopg2**, **pydantic-settings**, and packaged as
 # 1. Clone and enter
 git clone <repo-url> flo-energy && cd flo-energy
 
-# 2. Configure (copy defaults — works out of the box for localhost:5432)
-cp .env.example .env
+# 2. Edit .env if needed — works out of the box for localhost:5432
+#    (add ANTHROPIC_API_KEY for AI-agent mode)
+vi .env
 
 # 3. Install Python dependencies
 python -m venv .venv && source .venv/bin/activate
@@ -76,19 +77,18 @@ python process_nem12.py "data/nem12#assessment001#UNITEDDP#NEMMCO.csv"
 
 ## Configuration (.env)
 
-All settings are read from a `.env` file in the project root via
-**pydantic-settings** (`src/config.py`).  Environment variables always override
-`.env` values.
+All settings live in the `.env` file in the project root.
+`src/config.py` (pydantic-settings) reads `.env` as the **highest-priority
+source** — values in `.env` always win over any OS environment variable.
 
-```bash
-# Copy the template — works out of the box for localhost:5432
-cp .env.example .env
-```
-
-Key settings you may want to change:
+The file ships with sensible defaults that work out of the box for a local
+Postgres on `localhost:5432`.  The only setting you are likely to change is the
+Anthropic API key for AI-agent mode:
 
 ```dotenv
-# PostgreSQL connection (individual vars or single DATABASE_URL)
+# .env — open this file and set what you need
+
+# PostgreSQL connection
 PGHOST=localhost
 PGPORT=5432
 PGDATABASE=meter_db
@@ -99,7 +99,7 @@ PGPASSWORD=postgres
 LOG_LEVEL=INFO          # DEBUG | INFO | WARNING | ERROR
 LOG_FORMAT=console      # console | json
 
-# Only required for AI-agent mode (main.py without --no-agent)
+# Required for AI-agent mode (python main.py without --no-agent)
 # ANTHROPIC_API_KEY=sk-ant-...
 ```
 
@@ -457,7 +457,7 @@ flo-energy/
 ├── main.py                          # AI-agent runner
 ├── Dockerfile                       # Multi-stage build
 ├── docker-compose.yml               # Postgres + agent stack
-├── .env.example                     # Config template — copy to .env
+├── .env                             # All settings — edit this file
 ├── requirements.txt
 └── README.md
 ```
@@ -466,8 +466,8 @@ flo-energy/
 
 ## Environment Variables Reference
 
-All variables are loaded from `.env` by `src/config.py`.  Set them in `.env`
-or export them as shell variables (shell takes precedence).
+All variables are loaded from the `.env` file by `src/config.py`.
+Edit `.env` directly — it is the single source of truth for all configuration.
 
 | Variable | Default | Description |
 |---|---|---|

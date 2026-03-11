@@ -47,14 +47,13 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    # All settings come from .env — pydantic-settings reads it at startup.
+    # DATABASE_URL is the only override: inside the container the Postgres
+    # host is the service name "postgres", not "localhost".
+    env_file:
+      - .env
     environment:
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/meter_db
-      LOG_LEVEL: ${LOG_LEVEL:-INFO}
-      LOG_FORMAT: ${LOG_FORMAT:-json}
-      ENABLE_SQL_OUTPUT: ${ENABLE_SQL_OUTPUT:-false}
-      SQL_OUTPUT_PATH: /output/meter_readings.sql
-      METRICS_PORT: 8000
     volumes:
       - ./data:/data:ro          # input files (read-only)
       - ./output:/output         # SQL output (writable)
