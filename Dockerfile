@@ -36,7 +36,7 @@ WORKDIR /app
 
 # Copy application source
 COPY src/ src/
-COPY main.py .
+COPY main.py process_nem12.py ./
 
 # Data directory (mount point for input files)
 RUN mkdir -p /data /output

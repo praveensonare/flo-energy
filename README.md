@@ -1,348 +1,219 @@
-# Flo Energy – Meter Reading ETL Agent
+# Flo Energy — NEM12/NEM13 Meter Reading ETL
 
-An Agentic AI solution that processes NEM12 (and stub for NEM13) electricity
-meter data files and inserts the interval readings into a PostgreSQL database.
+Takes Australian energy meter data files (NEM12/NEM13), parses every interval reading, validates it, and stores it in PostgreSQL — driven by a **LangGraph async agent** running on Claude Opus.
 
-Built with **Python 3.12**, **Claude Opus 4.6** (Anthropic API), **psycopg2**,
-and packaged as a **Docker** container.
+The agent figures out what to do. You just point it at a file.
 
 ---
 
-## Architecture Overview
+## How it works
 
 ```
-┌──────────────────────────────────────────────────────────────┐
-│  MeterReadingAgent  (Claude Opus 4.6 – adaptive thinking)    │
-│                                                              │
-│  System prompt  ─▶  Agentic loop                            │
-│                          │                                  │
-│                    tool_use blocks                          │
-│                          │                                  │
-│              ┌───────────▼──────────────┐                   │
-│              │      ToolRegistry        │                   │
-│              │                          │                   │
-│  read_file ──┤  parse_file             ├── NEM12Parser      │
-│  validate  ──┤  generate_sql          ├── PostgresHandler   │
-│  write_db ───┤  send_notification     ├── NotificationSvc   │
-│  get_stats ──┤  get_processing_stats  ├── MetricsCollector  │
-│              └──────────────────────────┘                   │
-└──────────────────────────────────────────────────────────────┘
-```
+You: python main.py data/file.csv
+        │
+        ▼
+  LangChainMeterAgent            ← asyncio event loop
+        │
+        ├─ read_file             detect NEM12 or NEM13 format
+        ├─ parse_file            stream all interval readings line-by-line
+        ├─ validate_data  ──┐    run in parallel (single LLM turn)
+        ├─ generate_sql   ──┘
+        ├─ write_to_database     auto-creates table if missing; one transaction
+        └─ send_notification     log final outcome
 
-### Tool Sequence (orchestrated by the AI agent)
-
-```
-read_file → parse_file → validate_data → generate_sql
-         → write_to_database → send_notification
-```
-
-Each tool is:
-- **Declared** as a JSON schema (sent to the Claude API)
-- **Implemented** as a Python callable in `ToolRegistry`
-- **Reusable** by any agent or workflow that imports `ToolRegistry`
-
----
-
-## Project Structure
-
-```
-flo-energy/
-├── src/
-│   ├── models/
-│   │   └── meter_reading.py        # MeterReading, ParseSession, etc.
-│   ├── parsers/
-│   │   ├── base_parser.py          # Abstract base (polymorphism)
-│   │   ├── nem12_parser.py         # NEM12 streaming parser
-│   │   ├── nem13_parser.py         # NEM13 stub
-│   │   └── parser_factory.py       # Format auto-detection
-│   ├── database/
-│   │   └── postgres_handler.py     # ThreadedConnectionPool + batch inserts
-│   ├── notifications/
-│   │   └── notification_service.py # Pluggable notification handlers
-│   ├── observability/
-│   │   └── metrics.py              # structlog + Prometheus
-│   └── agent/
-│       ├── tools.py                # Tool schemas + ToolRegistry
-│       └── meter_reading_agent.py  # Claude agentic loop
-├── tests/                          # pytest unit tests
-├── data/
-│   └── sample_nem12.csv            # Example NEM12 file
-├── Dockerfile
-├── docker-compose.yml
-├── .env.example
-├── requirements.txt
-├── main.py
-└── README.md
+Multiple files → asyncio.gather() → each file gets its own agent loop, all run concurrently
 ```
 
 ---
 
-## Q&A – Design Decisions
+## Modules and how they connect
 
-### Q1. Rationale for technology choices
+### `main.py`
+Entry point. Parses CLI args, calls `asyncio.run(_run(file_paths))`. That's it — one function, no flags, no modes. Multiple files are passed straight to `process_files()`.
 
-| Technology | Rationale |
-|---|---|
-| **Python 3.12** | Rich ecosystem for data processing; `dataclasses`, `decimal`, `csv` built-in; strong async/threading support |
-| **Claude Opus 4.6** | Most capable model for complex multi-step orchestration; adaptive thinking handles ambiguous edge cases; tool_use API maps naturally to the ETL pipeline steps |
-| **Anthropic SDK (manual loop)** | Fine-grained control over each iteration: custom logging, error injection, partial-success handling, without giving up tool calling power |
-| **psycopg2 + ThreadedConnectionPool** | Battle-tested, efficient; `execute_values` for bulk inserts (10–100× faster than row-by-row); `ON CONFLICT DO NOTHING` makes the pipeline idempotent |
-| **Pydantic / dataclasses** | Strong data validation at model boundaries; `slots=True` for memory efficiency with millions of readings |
-| **structlog** | JSON-structured logs with bound context; integrates with standard `logging`; zero-overhead when log level is above threshold |
-| **prometheus_client** | Industry-standard metrics exposition; background thread publishes `/metrics` without blocking the ETL |
-| **tenacity** | Declarative retry logic for transient DB failures; exponential backoff prevents thundering herd |
-| **ThreadPoolExecutor** | Parallel batch DB writes saturate connection pool; CPU-bound parsing remains on main thread |
-| **Generator-based parsing** | `stream_readings()` processes arbitrarily large files (GB+) with O(batch_size) memory |
+### `src/agent/langchain_agent.py`
+The brain. Wraps `langgraph.prebuilt.create_react_agent` with `ChatAnthropic`. Exposes two methods:
+- `process_file(path)` — single file, awaitable
+- `process_files(paths)` — calls `asyncio.gather()` so N files run simultaneously, failures are isolated per file
 
-### Q2. What I would do differently with more time
+### `src/agent/langchain_tools.py`
+The hands. Seven `async @tool` functions that LangGraph calls when the model decides to act:
+`read_file → parse_file → validate_data + generate_sql → write_to_database → send_notification`
 
-1. **Async pipeline** – Replace `ThreadPoolExecutor` with `asyncio` + `asyncpg` for higher concurrency and lower overhead on I/O-bound DB writes.
+All session state lives in a dict guarded by `asyncio.Lock` so concurrent file runs never stomp on each other. Blocking work (I/O, DB) is offloaded to `ThreadPoolExecutor` via `run_in_executor`.
 
-2. **Redis session store** – Replace the in-memory `_sessions` dict with Redis so that multiple agent instances can share state, enabling horizontal scaling.
+### `src/parsers/`
+`NEM12Parser` and `NEM13Parser` — pure parsing logic, no side effects. `ParserFactory` auto-detects the format from the file header. The `parse_file` tool calls these.
 
-3. **Scheduled file ingestion** – Add a watcher thread (via `watchdog`) that monitors an S3 bucket or local directory and triggers the agent when new files arrive (the NEM12 spec defines a scheduled read date in the 200 record).
+### `src/database/postgres_handler.py`
+Manages a `ThreadedConnectionPool`. Key methods:
+- `ensure_schema()` — `CREATE TABLE IF NOT EXISTS`, safe to call any time
+- `atomic_bulk_insert()` — wraps every batch in **one** connection+transaction (ACID atomicity)
+- `bulk_insert()` — threaded parallel batches, used by other services
+- `generate_insert_sql()` — dry-run, no DB needed
 
-4. **Full NEM13 support** – Implement the accumulation-to-interval conversion logic (previous/current reads → derived consumption per time bucket).
+`write_to_database` tool calls `ensure_schema()` first, then `atomic_bulk_insert()`. The table is created automatically on first run. If the table already exists, `ensure_schema()` is a no-op.
 
-5. **400-record quality overrides** – The NEM12 400 record allows per-interval quality/method overrides within a 300 record; currently skipped.
+### `src/services/nem12_processor.py`
+Background thread + queue + `SharedReadingList`. Used by `process_nem12.py` (the lightweight runner). Decouples the producer (file parsing) from the consumer (DB writes) using `threading.Condition`.
 
-6. **Schema migrations** – Manage DB schema with Alembic instead of `ensure_schema()` one-off DDL.
+### `src/services/database_cache_service.py`
+Write-through in-memory cache over PostgreSQL. Stores readings as `{(nmi, ts): MeterReading}` with a sorted timestamp index per NMI for fast range queries. Cache and DB stay consistent — if the DB write fails, the cache is not updated.
 
-7. **Retry queue** – Failed batches are counted but not re-queued; a dead-letter queue (Celery / SQS) would allow retrying without reprocessing the whole file.
+### `src/config.py`
+Single `pydantic-settings` `Settings` class. Reads `.env` first, falls back to OS env vars. Everything in the app imports `from src.config import settings` — no `os.environ` calls scattered around.
 
-8. **Integration tests** – Add pytest fixtures that spin up a real PostgreSQL container (via `testcontainers`) to validate end-to-end behaviour.
+### `src/observability/metrics.py`
+`structlog` for structured logging + optional Prometheus `/metrics` endpoint. `MetricsCollector` runs as a background daemon thread.
 
-9. **OpenTelemetry traces** – Replace ad-hoc timing with OTEL spans so the full pipeline is traceable in Jaeger/Tempo.
-
-10. **Multi-file concurrency** – Allow the agent to process a directory of files by spawning one session per file in a `ProcessPoolExecutor`.
-
-### Q3. Rationale for design choices
-
-| Decision | Why |
-|---|---|
-| **Manual agentic loop** | The agent retries on partial failure (e.g. DB down during writes) without restarting the parse step – impossible with a fire-and-forget tool runner |
-| **Polymorphic parsers** | `ParserFactory.register()` lets users drop in new formats (NEM13, MSATS, CIM XML) at runtime without modifying the agent |
-| **Session state dict** | Allows tools to pass large datasets (list of MeterReading objects) between steps without serialising to JSON in the tool result, which would bloat the Claude context window |
-| **Adaptive thinking** | Claude can reason about malformed files, partial data, and ambiguous quality flags without being told every edge case upfront |
-| **ON CONFLICT DO NOTHING** | Makes re-running on the same file safe; the `meter_readings_unique_consumption` constraint on `(nmi, timestamp)` is the idempotency key |
-| **Background MetricsCollector thread** | Observability does not block the ETL path; daemon=True ensures it is killed when main thread exits |
-| **Notification handler chain** | Each handler can fail independently without breaking others; new channels (PagerDuty, email) are added by subclassing `NotificationHandler` |
+### `src/notifications/notification_service.py`
+Lightweight notification dispatcher. Logs to console by default; can post to a webhook URL (`NOTIFICATION_WEBHOOK_URL`). The `send_notification` tool calls this at the end of every file.
 
 ---
 
-## Local Setup (without Docker)
-
-### Prerequisites
-
-- Python 3.12+
-- PostgreSQL 15+ (local or remote)
-- Anthropic API key (optional – use `--no-agent` to skip)
-
-### Install dependencies
+## Quick start (local)
 
 ```bash
+# 1. Create virtual env and install deps
 python -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-```
 
-### Configure environment
-
-```bash
-cp .env.example .env
-# Edit .env with your values
-source .env  # or use direnv / python-dotenv
-```
-
-### Run tests
-
-```bash
-pytest                             # all tests with coverage
-pytest tests/test_nem12_parser.py  # specific module
-pytest -x                          # stop on first failure
-```
-
-### Run the agent (AI-powered)
-
-```bash
-# Set ANTHROPIC_API_KEY and DATABASE_URL in .env first
-python main.py data/sample_nem12.csv
-```
-
-### Run without the AI agent (direct pipeline)
-
-```bash
-# No API key needed
-python main.py data/sample_nem12.csv --no-agent
-
-# Generate SQL only (no DB write)
-python main.py data/sample_nem12.csv --no-agent --sql-only --output out.sql
-```
-
----
-
-## Docker Build and Run
-
-### Build the image
-
-```bash
-docker build -t flo-energy-agent .
-```
-
-### Run with Docker (direct pipeline, no API key)
-
-```bash
-docker run --rm \
-  -v $(pwd)/data:/data:ro \
-  -e DATABASE_URL=postgresql://postgres:postgres@host.docker.internal:5432/meter_db \
-  flo-energy-agent /data/sample_nem12.csv --no-agent
-```
-
-### Run with Docker (AI agent)
-
-```bash
-docker run --rm \
-  -v $(pwd)/data:/data:ro \
-  -v $(pwd)/output:/output \
-  -e ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY \
-  -e DATABASE_URL=postgresql://postgres:postgres@host.docker.internal:5432/meter_db \
-  flo-energy-agent /data/sample_nem12.csv
-```
-
----
-
-## Docker Compose (full stack)
-
-```bash
-# 1. Start PostgreSQL
+# 2. Start PostgreSQL (Docker)
 docker compose up postgres -d
 
-# 2. Wait for healthcheck, then run the agent
-docker compose run agent /data/sample_nem12.csv --no-agent
+# 3. Add your API key to .env
+echo "ANTHROPIC_API_KEY=sk-ant-..." >> .env
 
-# 3. Run with AI agent (requires ANTHROPIC_API_KEY in .env)
-docker compose run \
-  -e ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY \
-  agent /data/sample_nem12.csv
+# 4. Run a CSV file
+python main.py "data/nem12#assessment001#UNITEDDP#NEMMCO.csv"
 
-# 4. Tear down
-docker compose down -v
+# Run a ZIP file (contains a NEM12 CSV inside)
+python main.py "data/nem12#0123456789ABCDEF#TESTMDP1#TESTRETAIL.zip"
+
+# Multiple files at once — CSV and ZIP can be mixed (run in parallel)
+python main.py "data/nem12#assessment001#UNITEDDP#NEMMCO.csv" "data/nem12#0123456789ABCDEF#TESTMDP1#TESTRETAIL.zip"
+
+# Save SQL output too
+python main.py "data/nem12#assessment001#UNITEDDP#NEMMCO.csv" --output output/inserts.sql
+python main.py "data/nem12#0123456789ABCDEF#TESTMDP1#TESTRETAIL.zip" --output output/inserts.sql
+```
+
+No need to create the database table — it's created automatically on first run.
+
+---
+
+## Quick start (Docker)
+
+```bash
+# 1. Start Postgres
+docker compose up postgres -d
+
+# 2. Run the agent against a CSV file
+docker compose run --rm \
+  -e ANTHROPIC_API_KEY="sk-ant-..." \
+  agent "/data/nem12#assessment001#UNITEDDP#NEMMCO.csv"
+
+# 3. Run the agent against a ZIP file (NEM12 CSV inside)
+docker compose run --rm \
+  -e ANTHROPIC_API_KEY="sk-ant-..." \
+  agent "/data/nem12#0123456789ABCDEF#TESTMDP1#TESTRETAIL.zip"
+
+# 4. Multiple files — CSV and ZIP can be mixed
+docker compose run --rm \
+  -e ANTHROPIC_API_KEY="sk-ant-..." \
+  agent "/data/nem12#assessment001#UNITEDDP#NEMMCO.csv" "/data/nem12#0123456789ABCDEF#TESTMDP1#TESTRETAIL.zip"
+
+# 5. Save SQL output
+docker compose run --rm \
+  -e ANTHROPIC_API_KEY="sk-ant-..." \
+  agent "/data/nem12#assessment001#UNITEDDP#NEMMCO.csv" --output /output/inserts.sql
+
+# 6. Lightweight runner (no API key needed)
+docker compose run --rm agent python process_nem12.py "data/nem12#assessment001#UNITEDDP#NEMMCO.csv"
 ```
 
 ---
 
-## Environment Variables
+## Configuration (`.env`)
 
-| Variable | Required | Default | Description |
-|---|---|---|---|
-| `ANTHROPIC_API_KEY` | Yes (agent mode) | – | Claude API key |
-| `DATABASE_URL` | Yes | – | PostgreSQL DSN |
-| `PGHOST` | Alt to DATABASE_URL | localhost | |
-| `PGPORT` | Alt to DATABASE_URL | 5432 | |
-| `PGDATABASE` | Alt to DATABASE_URL | meter_db | |
-| `PGUSER` | Alt to DATABASE_URL | postgres | |
-| `PGPASSWORD` | Alt to DATABASE_URL | postgres | |
-| `LOG_LEVEL` | No | INFO | DEBUG/INFO/WARNING/ERROR |
-| `LOG_FORMAT` | No | json | json/console |
-| `ENABLE_SQL_OUTPUT` | No | false | Write SQL to file |
-| `SQL_OUTPUT_PATH` | No | – | Path for SQL output |
-| `METRICS_PORT` | No | 0 (off) | Prometheus port |
-
----
-
-## Database Schema
-
-```sql
-CREATE TABLE meter_readings (
-    id          UUID DEFAULT gen_random_uuid() NOT NULL,
-    nmi         VARCHAR(10) NOT NULL,
-    "timestamp" TIMESTAMP  NOT NULL,
-    consumption NUMERIC    NOT NULL,
-    CONSTRAINT meter_readings_pk PRIMARY KEY (id),
-    CONSTRAINT meter_readings_unique_consumption UNIQUE (nmi, "timestamp")
-);
-```
-
----
-
-## NEM12 Format Reference
-
-| Record | Purpose | Key fields used |
+| Variable | Default | What it does |
 |---|---|---|
-| 100 | File header | Version identifier (`NEM12`) |
-| 200 | NMI block header | NMI (field 2), interval length in minutes (field 9) |
-| 300 | Interval data | Date (field 2), N consumption values (fields 3..N+2), quality flag |
-| 400 | Quality overrides | Skipped (future work) |
-| 500 | B2B details | Skipped |
-| 900 | End of file | Terminates parsing |
-
-**Timestamp convention**: NEM12 uses *interval-ending* timestamps.
-Interval `i` (1-indexed) on date `D` with length `L` minutes:
-
-```
-timestamp_i = D + i × L minutes
-```
-
-Example (30 min, 2005-03-01):
-- Interval 1 → `2005-03-01 00:30:00`
-- Interval 48 → `2005-03-02 00:00:00`
+| `ANTHROPIC_API_KEY` | _(required)_ | Claude API key |
+| `PGHOST` | `localhost` | Postgres host |
+| `PGPORT` | `5432` | Postgres port |
+| `PGDATABASE` | `meter_db` | Database name |
+| `PGUSER` | `postgres` | DB user |
+| `PGPASSWORD` | `postgres` | DB password |
+| `DATABASE_URL` | _(assembled from above)_ | Full DSN — overrides all PG* vars |
+| `LOG_LEVEL` | `INFO` | `DEBUG` / `INFO` / `WARNING` / `ERROR` |
+| `LOG_FORMAT` | `console` | `console` (human-readable) or `json` (structured) |
+| `ENABLE_SQL_OUTPUT` | `false` | Write SQL to file in addition to DB insert |
+| `SQL_OUTPUT_PATH` | `output/meter_readings.sql` | Where to write SQL |
+| `METRICS_PORT` | `0` | Prometheus port (`0` = disabled) |
 
 ---
 
-## Future Work
+## ACID guarantees
 
-### NEM13 Support
+Every file is written in a **single PostgreSQL transaction**:
 
-NEM13 covers **accumulation (non-interval) meters** – a single cumulative
-reading per register per read date instead of many interval values.
-
-**Key record types to implement:**
-
-| Record | Purpose |
+| Property | How |
 |---|---|
-| 100 | File header (version `NEM13`) |
-| 250 | NMI block header (NMI, register, UOM, meter serial) |
-| 350 | Register read (previous + current readings, dates, read type) |
-| 550 | B2B details |
-| 900 | End of file |
-
-**Consumption derivation:**
-```
-consumption = (current_read - previous_read) × multiplier
-```
-adjusted for meter roll-overs and read-type qualifiers (Actual/Estimated/Substituted).
-
-Each `(nmi, interval_start, interval_end)` tuple maps to one row in
-`meter_readings` with `timestamp = interval_end`.
-
-**Implementation plan:**
-1. Add `NEM13Parser.parse()` and `stream_readings()` in `src/parsers/nem13_parser.py`
-2. Add `NEM13Block` / `NEM13RegisterRead` models to `src/models/`
-3. Register `NEM13Parser` in `ParserFactory._REGISTRY`
-4. Add integration tests in `tests/test_nem13_parser.py`
-
-### Other Improvements
-
-- MSATS/CIM XML format parsers via the same `BaseParser` interface
-- Async pipeline with `asyncpg` for higher throughput
-- Redis-backed session store for horizontal scaling
-- Alembic database migrations
-- OpenTelemetry distributed tracing
-- Dead-letter queue for failed batches
-- Watchdog-based scheduled file ingestion (honour the 200 record's `NextScheduledReadDate`)
-- Full 400-record quality-override support
+| **Atomicity** | All batches share one connection. Everything commits or everything rolls back. |
+| **Consistency** | `UNIQUE(nmi, timestamp)` DB constraint. Model rejects negative consumption. |
+| **Isolation** | Each file is its own transaction. Concurrent files don't interfere. |
+| **Durability** | PostgreSQL WAL. Committed data survives crashes. |
 
 ---
 
-## Observability
+## Race condition safety
 
-- **Structured logs** (JSON via structlog) – every tool call, DB batch, and error is logged with context
-- **Prometheus metrics** – exposed at `:8000/metrics` when `METRICS_PORT=8000`
-  - `meter_files_processed_total`
-  - `meter_readings_parsed_total`
-  - `meter_readings_inserted_total`
-  - `meter_readings_skipped_total`
-  - `meter_readings_failed_total`
-  - `meter_parse_duration_seconds`
-  - `meter_db_write_duration_seconds`
-- **Background thread** – `MetricsCollector` logs a snapshot every 15 seconds
+- `asyncio.Lock` guards the session dict — two coroutines can't mutate the same session simultaneously
+- `ON CONFLICT DO NOTHING` makes inserts idempotent — safe to retry or run twice
+- `ThreadedConnectionPool` is thread-safe for concurrent batch workers inside `run_in_executor`
+
+---
+
+## Running tests
+
+```bash
+pytest                              # all tests
+pytest tests/test_nem12_parser.py   # one module
+pytest --cov=src                    # with coverage report
+```
+
+---
+
+## Project structure
+
+```
+flo-energy/
+├── main.py                          async entry point (LangGraph agent)
+├── process_nem12.py                 lightweight runner, no API key needed
+├── requirements.txt
+├── Dockerfile
+├── docker-compose.yml
+├── .env                             all config lives here
+├── data/                            sample NEM12 files
+├── output/                          SQL output (created on demand)
+└── src/
+    ├── config.py                    pydantic-settings singleton
+    ├── models/meter_reading.py      MeterReading, ParseSession, ValidationResult
+    ├── parsers/
+    │   ├── nem12_parser.py          streaming NEM12 CSV parser
+    │   ├── nem13_parser.py          NEM13 parser
+    │   └── parser_factory.py        auto-detects format from file header
+    ├── database/
+    │   └── postgres_handler.py      connection pool, ensure_schema, atomic_bulk_insert
+    ├── services/
+    │   ├── nem12_processor.py       thread-queue pipeline + SharedReadingList
+    │   └── database_cache_service.py write-through in-memory cache
+    ├── notifications/
+    │   └── notification_service.py  console + webhook dispatcher
+    ├── observability/
+    │   └── metrics.py               structlog + Prometheus
+    └── agent/
+        ├── langchain_tools.py       async @tool functions — CSV and ZIP input supported
+        └── langchain_agent.py       LangGraph ReAct agent, asyncio.gather
+```

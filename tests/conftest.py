@@ -1,10 +1,12 @@
 """
 Shared test fixtures and configuration.
+Provides NEM12/NEM13 CSV and ZIP temp files used across all test modules.
 """
 from __future__ import annotations
 
 import os
 import tempfile
+import zipfile
 from decimal import Decimal
 from typing import Generator
 
@@ -39,16 +41,16 @@ NEM13_SAMPLE = """100,NEM13,200506081149,UNITEDDP,NEMMCO
 
 @pytest.fixture
 def nem12_file(tmp_path) -> str:
-    """Write sample NEM12 data to a temp file and return its path."""
-    p = tmp_path / "sample_nem12.csv"
+    """Write sample NEM12 data to a spec-compliant temp file and return its path."""
+    p = tmp_path / "nem12#SAMPLE001#TESTMDP1#TESTRETAIL.csv"
     p.write_text(NEM12_SAMPLE)
     return str(p)
 
 
 @pytest.fixture
 def nem12_minimal_file(tmp_path) -> str:
-    """Write minimal NEM12 data (1 NMI, 1 day, all 1.000) to temp file."""
-    p = tmp_path / "minimal_nem12.csv"
+    """Write minimal NEM12 data (1 NMI, 1 day, all 1.000) to a spec-compliant temp file."""
+    p = tmp_path / "nem12#MINIMAL01#TESTMDP1#TESTRETAIL.csv"
     p.write_text(NEM12_MINIMAL)
     return str(p)
 
@@ -70,7 +72,19 @@ def empty_file(tmp_path) -> str:
 
 @pytest.fixture
 def malformed_file(tmp_path) -> str:
+    # NEM12 file with an NMI that exceeds the 10-character limit.
     content = "100,NEM12,20050101,X,Y\n200,TOOLONGFORNMI,E1,1,E1,N1,001,kWh,30,20050610\n"
     p = tmp_path / "malformed.csv"
     p.write_text(content)
     return str(p)
+
+
+@pytest.fixture
+def nem12_zip_file(tmp_path) -> str:
+    # Create a ZIP archive containing a valid NEM12 CSV, mirroring real delivery format.
+    csv_path = tmp_path / "nem12#test001#MDP1#RETAIL1.csv"
+    csv_path.write_text(NEM12_SAMPLE)
+    zip_path = tmp_path / "nem12#test001#MDP1#RETAIL1.zip"
+    with zipfile.ZipFile(str(zip_path), "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.write(str(csv_path), arcname=csv_path.name)
+    return str(zip_path)

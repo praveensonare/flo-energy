@@ -33,6 +33,8 @@ logger = structlog.get_logger(__name__)
 _NEM13_VERSION = "NEM13"
 
 
+# Stub parser for NEM13 accumulation meter files that implements format detection only.
+# parse() and stream_readings() raise NotImplementedError pending a future implementation.
 class NEM13Parser(BaseParser):
     """
     Stub parser for NEM13 accumulation meter files.
@@ -45,6 +47,8 @@ class NEM13Parser(BaseParser):
     def format_name(self) -> str:
         return "NEM13"
 
+    # Checks whether the file's first non-blank line starts with '100,NEM13'.
+    # Only reads a single line so detection cost is independent of file size.
     @classmethod
     def detect(cls, file_path: str) -> bool:
         """
@@ -65,12 +69,16 @@ class NEM13Parser(BaseParser):
         except OSError:
             return False
 
+    # Placeholder for the future NEM13 streaming implementation.
+    # Always raises NotImplementedError until the full implementation is provided.
     def stream_readings(self, file_path: str) -> Generator[MeterReading, None, None]:
         raise NotImplementedError(
             "NEM13 parsing is not yet implemented. "
             "See README § Future Work for the roadmap."
         )
 
+    # Placeholder for the future NEM13 bulk-parse implementation.
+    # Always raises NotImplementedError until the full implementation is provided.
     def parse(self, file_path: str) -> ParserResult:
         raise NotImplementedError(
             "NEM13 parsing is not yet implemented. "

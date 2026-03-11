@@ -24,6 +24,8 @@ _REGISTRY: list[type[BaseParser]] = [
 ]
 
 
+# Selects and instantiates the correct parser for a given file by consulting the registry.
+# Adding new formats only requires registering a new parser class; no other code changes needed.
 class ParserFactory:
     """
     Factory that maps an input file to the appropriate parser.
@@ -34,6 +36,8 @@ class ParserFactory:
         result = parser.parse("/data/meters.csv")
     """
 
+    # Iterates the parser registry and returns an instance of the first parser that detects the format.
+    # Raises ValueError if no registered parser recognises the file.
     @staticmethod
     def get_parser(file_path: str) -> BaseParser:
         """
@@ -56,6 +60,8 @@ class ParserFactory:
             f"Supported formats: {[c().format_name for c in _REGISTRY]}"
         )
 
+    # Returns the format name string for a file without keeping a parser instance around.
+    # Returns "UNKNOWN" when no registered parser matches the file.
     @staticmethod
     def get_format(file_path: str) -> str:
         """Return the format name without constructing a full parser."""
@@ -65,6 +71,8 @@ class ParserFactory:
                 return cls().format_name
         return "UNKNOWN"
 
+    # Prepends a parser class to the registry so it is tried before the built-in parsers.
+    # Useful for plugins, custom formats, or injecting test doubles at runtime.
     @staticmethod
     def register(parser_class: type[BaseParser]) -> None:
         """

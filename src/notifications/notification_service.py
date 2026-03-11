@@ -24,6 +24,8 @@ from src.observability.metrics import get_metrics
 logger = structlog.get_logger(__name__)
 
 
+# Enum of notification severity levels used to route and filter messages across handlers.
+# Values match the lowercase strings used in log output and webhook payloads.
 class NotificationLevel(str, Enum):
     INFO = "info"
     WARNING = "warning"
@@ -31,9 +33,13 @@ class NotificationLevel(str, Enum):
     SUCCESS = "success"
 
 
+# Abstract base class for all notification delivery channels (log, console, webhook, etc.).
+# Subclasses must implement send() and must never let it raise an exception.
 class NotificationHandler(ABC):
     """Abstract base for notification delivery channels."""
 
+    # Delivers a single notification at the given level with optional context metadata.
+    # Implementations must swallow all exceptions to avoid disrupting the pipeline.
     @abstractmethod
     def send(
         self,
@@ -44,9 +50,13 @@ class NotificationHandler(ABC):
         """Deliver a notification. Implementations must not raise."""
 
 
+# Notification handler that writes every notification to the structlog structured logger.
+# Acts as a guaranteed fallback; always registered by NotificationService on construction.
 class LogNotificationHandler(NotificationHandler):
     """Writes all notifications to the structured log."""
 
+    # Dispatches the notification to the appropriate structlog level function.
+    # SUCCESS is mapped to info since structlog has no dedicated success level.
     def send(
         self,
         level: NotificationLevel,
@@ -68,9 +78,13 @@ class LogNotificationHandler(NotificationHandler):
         )
 
 
+# Notification handler that prints messages to stdout with a symbol and level prefix.
+# Intended for interactive CLI use where human-readable output is more useful than JSON logs.
 class ConsoleNotificationHandler(NotificationHandler):
     """Writes notifications to stdout in a human-friendly format."""
 
+    # Formats the notification with a Unicode symbol, uppercased level label, and optional context.
+    # Context dict is appended as a JSON string separated by a pipe character.
     def send(
         self,
         level: NotificationLevel,
@@ -90,6 +104,8 @@ class ConsoleNotificationHandler(NotificationHandler):
         print(f"[{level.value.upper():7s}] {symbol} {message}{ctx_str}")
 
 
+# Notification handler that POSTs WARNING and ERROR messages to an HTTP webhook URL.
+# INFO and SUCCESS levels are silently dropped to avoid noisy webhook traffic.
 class WebhookNotificationHandler(NotificationHandler):
     """
     Posts notifications to an HTTP webhook (Slack, Teams, custom).
@@ -101,6 +117,8 @@ class WebhookNotificationHandler(NotificationHandler):
     def __init__(self, webhook_url: str) -> None:
         self._url = webhook_url
 
+    # Sends a JSON POST to the configured webhook URL with level and message fields.
+    # Failures are logged as warnings rather than raised so the pipeline is not interrupted.
     def send(
         self,
         level: NotificationLevel,
@@ -133,6 +151,8 @@ class WebhookNotificationHandler(NotificationHandler):
             )
 
 
+# Thread-safe fan-out dispatcher that delivers each notification to all registered handlers.
+# A LogNotificationHandler is always registered at construction as a guaranteed safety net.
 class NotificationService:
     """
     Fan-out notification dispatcher.
@@ -152,10 +172,14 @@ class NotificationService:
         # Log handler is always present
         self._handlers.append(LogNotificationHandler())
 
+    # Appends a new handler to the list under the thread lock so registration is safe at any time.
+    # The handler will receive all subsequent notify() calls from this service instance.
     def add_handler(self, handler: NotificationHandler) -> None:
         with self._lock:
             self._handlers.append(handler)
 
+    # Dispatches a notification to every registered handler and increments the Prometheus counter.
+    # Accepts either a NotificationLevel enum value or a plain string for convenience.
     def notify(
         self,
         level: NotificationLevel | str,
@@ -182,6 +206,8 @@ class NotificationService:
                     error=str(exc),
                 )
 
+    # Factory method that returns a NotificationService with Console and Log handlers pre-registered.
+    # Use this for quick setup in scripts or tests where a fully configured service is needed.
     @classmethod
     def default(cls) -> "NotificationService":
         """Return a service pre-configured with Console + Log handlers."""

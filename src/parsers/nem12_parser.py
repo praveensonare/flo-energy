@@ -49,6 +49,8 @@ _NEM12_VERSION = "NEM12"
 _VALID_INTERVAL_LENGTHS = {1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30, 60}
 
 
+# Converts a raw YYYYMMDD string into a Python datetime object.
+# Returns None instead of raising if the string cannot be parsed.
 def _parse_interval_date(raw: str) -> datetime | None:
     """Parse YYYYMMDD string into a datetime; return None on failure."""
     try:
@@ -57,6 +59,8 @@ def _parse_interval_date(raw: str) -> datetime | None:
         return None
 
 
+# Opens a CSV file and yields each non-blank row as a list of string fields.
+# Uses csv.reader so quoted fields containing commas are handled correctly.
 def _iter_csv_lines(file_path: str) -> Generator[list[str], None, None]:
     """
     Yield tokenised CSV rows, one per logical line.
@@ -71,6 +75,8 @@ def _iter_csv_lines(file_path: str) -> Generator[list[str], None, None]:
                 yield row
 
 
+# Parser for NEM12 interval meter data files, processing records 100–900.
+# Thread-safe: no mutable instance state is shared between parse() calls.
 class NEM12Parser(BaseParser):
     """
     Parser for NEM12 interval meter data files.
@@ -83,6 +89,8 @@ class NEM12Parser(BaseParser):
     def format_name(self) -> str:
         return "NEM12"
 
+    # Checks whether the file's first non-blank line starts with '100,NEM12'.
+    # Reads only that line so detection is O(1) in file size.
     @classmethod
     def detect(cls, file_path: str) -> bool:
         """
@@ -108,6 +116,8 @@ class NEM12Parser(BaseParser):
     # Core parsing
     # ------------------------------------------------------------------
 
+    # Drives a state machine over the NEM12 file and yields one MeterReading per interval.
+    # Memory usage stays constant regardless of file size since readings are not accumulated.
     def stream_readings(self, file_path: str) -> Generator[MeterReading, None, None]:
         """
         Yield MeterReading objects one at a time.
@@ -162,6 +172,8 @@ class NEM12Parser(BaseParser):
                     line=line_num,
                 )
 
+    # Reads the entire NEM12 file and returns a ParserResult containing all readings and diagnostics.
+    # Malformed lines are recorded as errors or warnings rather than aborting the parse.
     def parse(self, file_path: str) -> ParserResult:
         """
         Parse the complete file and return a ParserResult.
@@ -225,6 +237,8 @@ class NEM12Parser(BaseParser):
     # Private helpers
     # ------------------------------------------------------------------
 
+    # Parses a NEM12 200-record row into an NEM12Block holding NMI and interval metadata.
+    # Returns None and logs a warning if the row is malformed or contains an invalid NMI.
     def _parse_200(self, row: list[str], line_num: int) -> NEM12Block | None:
         """
         Parse a 200 record and return an NEM12Block.
@@ -282,6 +296,8 @@ class NEM12Parser(BaseParser):
             )
             return None
 
+    # Parses a NEM12 300-record row and yields one MeterReading for each interval value.
+    # Invalid consumption values are skipped with a warning; valid ones use interval-ending timestamps.
     def _parse_300(
         self,
         row: list[str],

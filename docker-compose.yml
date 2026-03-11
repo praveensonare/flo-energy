@@ -5,12 +5,12 @@ version: "3.9"
 # ============================================================
 # Services:
 #   postgres  – local PostgreSQL 15 instance
-#   agent     – the ETL agent (runs against sample data)
+#   agent     – the LangGraph ETL agent (requires ANTHROPIC_API_KEY)
 #
 # Usage:
-#   docker compose up postgres          # start DB only
-#   docker compose run agent /data/sample_nem12.csv
-#   docker compose run agent /data/sample_nem12.csv --no-agent
+#   docker compose up postgres -d
+#   docker compose run agent "/data/nem12#assessment001#UNITEDDP#NEMMCO.csv"
+#   docker compose run agent "/data/nem12#assessment001#UNITEDDP#NEMMCO.csv" "/data/nem12#0123456789ABCDEF#TESTMDP1#TESTRETAIL.zip"
 
 services:
 
@@ -47,21 +47,20 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    # All settings come from .env — pydantic-settings reads it at startup.
+    # DATABASE_URL is the only override: inside the container the Postgres
+    # host is the service name "postgres", not "localhost".
+    env_file:
+      - .env
     environment:
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/meter_db
-      LOG_LEVEL: ${LOG_LEVEL:-INFO}
-      LOG_FORMAT: ${LOG_FORMAT:-json}
-      ENABLE_SQL_OUTPUT: ${ENABLE_SQL_OUTPUT:-false}
-      SQL_OUTPUT_PATH: /output/meter_readings.sql
-      METRICS_PORT: 8000
     volumes:
       - ./data:/data:ro          # input files (read-only)
       - ./output:/output         # SQL output (writable)
     ports:
       - "8000:8000"              # Prometheus metrics
-    # Default: run against sample data without the agent (no API key needed)
-    command: ["/data/sample_nem12.csv", "--no-agent"]
+    # Default: run the agent against the assessment sample file (override with docker compose run)
+    command: ["/data/nem12#assessment001#UNITEDDP#NEMMCO.csv"]
     restart: "no"
 
 volumes:
