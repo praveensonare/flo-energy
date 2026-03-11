@@ -41,16 +41,16 @@ NEM13_SAMPLE = """100,NEM13,200506081149,UNITEDDP,NEMMCO
 
 @pytest.fixture
 def nem12_file(tmp_path) -> str:
-    """Write sample NEM12 data to a temp file and return its path."""
-    p = tmp_path / "sample_nem12.csv"
+    """Write sample NEM12 data to a spec-compliant temp file and return its path."""
+    p = tmp_path / "nem12#SAMPLE001#TESTMDP1#TESTRETAIL.csv"
     p.write_text(NEM12_SAMPLE)
     return str(p)
 
 
 @pytest.fixture
 def nem12_minimal_file(tmp_path) -> str:
-    """Write minimal NEM12 data (1 NMI, 1 day, all 1.000) to temp file."""
-    p = tmp_path / "minimal_nem12.csv"
+    """Write minimal NEM12 data (1 NMI, 1 day, all 1.000) to a spec-compliant temp file."""
+    p = tmp_path / "nem12#MINIMAL01#TESTMDP1#TESTRETAIL.csv"
     p.write_text(NEM12_MINIMAL)
     return str(p)
 

@@ -43,14 +43,16 @@ You are a Meter Reading ETL Agent. Process Australian energy meter data files \
 (NEM12 / NEM13 format, supplied as CSV or ZIP) into PostgreSQL.
 
 For each file call tools in this exact order:
-  1. read_file      – detect format; stop with error notification if file missing
-  2. parse_file     – extract all meter readings
-  3. validate_data AND generate_sql – call BOTH simultaneously in one turn
-  4. write_to_database – atomic insert (one transaction; all-or-nothing)
-  5. send_notification – report final outcome (level: success / warning / error)
+  1. validate_filename – check NEM12 naming convention; warn if non-compliant but continue
+  2. read_file         – detect format (NEM12/NEM13); stop with error if file missing
+  3. parse_file        – extract all meter readings
+  4. validate_data AND generate_sql – call BOTH simultaneously in one turn
+  5. write_to_database – atomic insert (one transaction; all-or-nothing)
+  6. send_notification – report final outcome (level: success / warning / error)
 
 Rules:
 - Always end with send_notification.
+- If validate_filename fails, include a warning in the final notification but continue.
 - If parse_file returns errors, send a warning notification and continue.
 - validate_data and generate_sql are independent; always call them in parallel.
 - Be concise; focus on tool calls over explanatory text.
@@ -113,11 +115,12 @@ class LangChainMeterAgent:
         message = (
             f"Process this meter data file: {file_path}\n\n"
             "Steps:\n"
-            "1. read_file → detect format (CSV or ZIP both supported)\n"
-            "2. parse_file → extract readings\n"
-            "3. validate_data + generate_sql → call BOTH in parallel\n"
-            "4. write_to_database → atomic insert (table auto-created if missing)\n"
-            "5. send_notification → report outcome\n"
+            "1. validate_filename → check NEM12 naming convention\n"
+            "2. read_file → detect format (CSV or ZIP both supported)\n"
+            "3. parse_file → extract readings\n"
+            "4. validate_data + generate_sql → call BOTH in parallel\n"
+            "5. write_to_database → atomic insert (table auto-created if missing)\n"
+            "6. send_notification → report outcome\n"
         )
         if settings.enable_sql_output and settings.sql_output_path:
             message += f"\nWrite SQL to: {settings.sql_output_path}"

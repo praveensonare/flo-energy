@@ -23,11 +23,14 @@ import asyncio
 import functools
 import json
 import os
+import re
 import shutil
 import tempfile
 import zipfile
+from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
+from pathlib import Path
 from typing import Any, Optional
 
 import structlog
@@ -40,6 +43,33 @@ from src.observability.metrics import get_metrics
 from src.parsers.parser_factory import ParserFactory
 
 logger = structlog.get_logger(__name__)
+
+# ---------------------------------------------------------------------------
+# NEM12 filename validation — spec section 3.2.2
+# ---------------------------------------------------------------------------
+
+# NEM12 Alternative Delivery naming convention:
+#   NEM12#<UniqueID>#<From>#<To>.csv|zip  (case-insensitive)
+#   UniqueID: 1-36 alphanumeric chars; From/To: 1-10 alphanumeric chars
+_FILENAME_RE = re.compile(
+    r"^nem12"
+    r"#([A-Za-z0-9]{1,36})"   # #UniqueID
+    r"#([A-Za-z0-9]{1,10})"   # #From participant
+    r"#([A-Za-z0-9]{1,10})"   # #To participant
+    r"\.(csv|zip)$",
+    re.IGNORECASE,
+)
+
+
+@dataclass
+class FilenameInfo:
+    # Parsed components of a validated NEM12 filename.
+    # Returned by validate_filename and used to log audit-trail metadata.
+    unique_id: str
+    from_participant: str
+    to_participant: str
+    extension: str  # "csv" or "zip"
+
 
 # ---------------------------------------------------------------------------
 # Shared state — asyncio.Lock prevents concurrent mutation of the same session
@@ -150,6 +180,40 @@ def _error(message: str) -> str:
 # ---------------------------------------------------------------------------
 # Tools
 # ---------------------------------------------------------------------------
+
+@tool
+async def validate_filename(file_path: str) -> str:
+    """
+    Validate that the filename follows the NEM12 Alternative Delivery naming
+    convention: NEM12#<UniqueID>#<From>#<To>.csv|zip (case-insensitive).
+    Returns parsed filename components. Always call this before read_file.
+    """
+    filename = Path(file_path).name
+    match = _FILENAME_RE.match(filename)
+    if not match:
+        return _error(
+            f"Filename '{filename}' does not conform to the NEM12 naming convention "
+            "NEM12#<UniqueID>#<From>#<To>.<csv|zip> (case-insensitive). "
+            "Example: nem12#ABC123#TESTMDP1#TESTRETAIL.csv"
+        )
+    unique_id, from_p, to_p, ext = match.groups()
+    logger.info(
+        "tool.validate_filename",
+        filename=filename,
+        unique_id=unique_id,
+        from_participant=from_p,
+        to_participant=to_p,
+    )
+    return _ok(
+        {
+            "filename": filename,
+            "unique_id": unique_id,
+            "from_participant": from_p,
+            "to_participant": to_p,
+            "extension": ext.lower(),
+        }
+    )
+
 
 @tool
 async def read_file(file_path: str) -> str:
@@ -274,27 +338,65 @@ async def validate_data(session_id: str) -> str:
         return _error(f"Session not found: '{session_id}'")
 
     validation = ValidationResult(is_valid=True)
-    seen: set[tuple[str, str]] = set()
+    now = datetime.utcnow()
 
+    # -- Duplicate (NMI, timestamp) detection --
+    seen: set[tuple[str, str]] = set()
     for reading in session.readings:
         key = (reading.nmi, reading.timestamp.isoformat())
         if key in seen:
             validation.duplicate_count += 1
-            validation.warnings.append(
-                f"Duplicate: NMI={reading.nmi} ts={reading.timestamp}"
-            )
         else:
             seen.add(key)
+    if validation.duplicate_count:
+        validation.warnings.append(
+            f"{validation.duplicate_count} duplicate (NMI, timestamp) pair(s). "
+            "ON CONFLICT DO NOTHING will deduplicate on insert."
+        )
 
-        if reading.consumption < 0:
-            validation.invalid_count += 1
-            validation.errors.append(
-                f"Negative consumption: NMI={reading.nmi} ts={reading.timestamp}"
-            )
+    # -- Negative consumption (NEM12 spec section 4.4) --
+    negative = [r for r in session.readings if r.consumption < Decimal("0")]
+    if negative:
+        validation.invalid_count += len(negative)
+        validation.errors.append(
+            f"{len(negative)} reading(s) have negative consumption, "
+            "which is not allowed by NEM12 spec section 4.4."
+        )
 
-        if reading.timestamp > datetime.utcnow():
+    # -- NMI length (spec: max 10 alphanumeric chars) --
+    invalid_nmi = [r for r in session.readings if not r.nmi or len(r.nmi) > 10]
+    if invalid_nmi:
+        validation.invalid_count += len(invalid_nmi)
+        validation.errors.append(
+            f"{len(invalid_nmi)} reading(s) have an invalid NMI "
+            "(empty or longer than 10 characters)."
+        )
+
+    # -- Future timestamps --
+    future = [r for r in session.readings if r.timestamp > now]
+    if future:
+        validation.warnings.append(
+            f"{len(future)} reading(s) have timestamps in the future "
+            f"(latest: {max(r.timestamp for r in future).isoformat()})."
+        )
+
+    # -- Zero consumption (informational warning) --
+    zero_count = sum(1 for r in session.readings if r.consumption == Decimal("0"))
+    if zero_count:
+        validation.warnings.append(
+            f"{zero_count} interval(s) have zero consumption "
+            "(may indicate meter outage or off-peak period)."
+        )
+
+    # -- Sequential date ordering per NMI (spec section 4.4) --
+    nmi_dates: dict[str, list[datetime]] = {}
+    for r in session.readings:
+        nmi_dates.setdefault(r.nmi, []).append(r.timestamp)
+    for nmi, timestamps in nmi_dates.items():
+        if timestamps != sorted(timestamps):
             validation.warnings.append(
-                f"Future timestamp: NMI={reading.nmi} ts={reading.timestamp}"
+                f"NMI {nmi}: interval timestamps are not in ascending order "
+                "(NEM12 spec section 4.4 requires sequential date order)."
             )
 
     validation.valid_count = (
@@ -451,6 +553,7 @@ async def get_processing_stats(session_id: str) -> str:
 # ---------------------------------------------------------------------------
 
 ALL_TOOLS = [
+    validate_filename,
     read_file,
     parse_file,
     validate_data,

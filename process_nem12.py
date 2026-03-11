@@ -90,8 +90,9 @@ def _build_parser() -> argparse.ArgumentParser:
         "--no-validate-filename",
         action="store_true",
         help=(
-            "Skip NEM12 filename convention check.  Useful for running "
-            "sample_nem12_full.csv or other files without spec-compliant names."
+            "Skip NEM12 filename convention check "
+            "(NEM12#<UniqueID>#<From>#<To>.csv|zip).  "
+            "Use for files that do not follow the spec naming convention."
         ),
     )
     p.add_argument(

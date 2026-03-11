@@ -86,17 +86,17 @@ docker compose up postgres -d
 echo "ANTHROPIC_API_KEY=sk-ant-..." >> .env
 
 # 4. Run a CSV file
-python main.py data/sample_nem12.csv
+python main.py "data/nem12#assessment001#UNITEDDP#NEMMCO.csv"
 
-# Run a ZIP file (contains a NEM12/NEM13 CSV inside)
-python main.py data/sample_nem12.zip
+# Run a ZIP file (contains a NEM12 CSV inside)
+python main.py "data/nem12#0123456789ABCDEF#TESTMDP1#TESTRETAIL.zip"
 
 # Multiple files at once — CSV and ZIP can be mixed (run in parallel)
-python main.py data/file1.csv data/file2.zip data/file3.csv
+python main.py "data/nem12#assessment001#UNITEDDP#NEMMCO.csv" "data/nem12#0123456789ABCDEF#TESTMDP1#TESTRETAIL.zip"
 
 # Save SQL output too
-python main.py data/sample_nem12.csv --output output/inserts.sql
-python main.py data/sample_nem12.zip --output output/inserts.sql
+python main.py "data/nem12#assessment001#UNITEDDP#NEMMCO.csv" --output output/inserts.sql
+python main.py "data/nem12#0123456789ABCDEF#TESTMDP1#TESTRETAIL.zip" --output output/inserts.sql
 ```
 
 No need to create the database table — it's created automatically on first run.
@@ -112,25 +112,25 @@ docker compose up postgres -d
 # 2. Run the agent against a CSV file
 docker compose run --rm \
   -e ANTHROPIC_API_KEY="sk-ant-..." \
-  agent /data/sample_nem12.csv
+  agent "/data/nem12#assessment001#UNITEDDP#NEMMCO.csv"
 
-# 3. Run the agent against a ZIP file (NEM12/NEM13 CSV inside)
+# 3. Run the agent against a ZIP file (NEM12 CSV inside)
 docker compose run --rm \
   -e ANTHROPIC_API_KEY="sk-ant-..." \
-  agent /data/sample_nem12.zip
+  agent "/data/nem12#0123456789ABCDEF#TESTMDP1#TESTRETAIL.zip"
 
 # 4. Multiple files — CSV and ZIP can be mixed
 docker compose run --rm \
   -e ANTHROPIC_API_KEY="sk-ant-..." \
-  agent /data/file1.csv /data/file2.zip
+  agent "/data/nem12#assessment001#UNITEDDP#NEMMCO.csv" "/data/nem12#0123456789ABCDEF#TESTMDP1#TESTRETAIL.zip"
 
 # 5. Save SQL output
 docker compose run --rm \
   -e ANTHROPIC_API_KEY="sk-ant-..." \
-  agent /data/sample_nem12.csv --output /output/inserts.sql
+  agent "/data/nem12#assessment001#UNITEDDP#NEMMCO.csv" --output /output/inserts.sql
 
 # 6. Lightweight runner (no API key needed)
-docker compose run --rm agent python process_nem12.py /data/sample_nem12.csv
+docker compose run --rm agent python process_nem12.py "data/nem12#assessment001#UNITEDDP#NEMMCO.csv"
 ```
 
 ---

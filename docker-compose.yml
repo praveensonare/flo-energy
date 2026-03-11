@@ -9,8 +9,8 @@ version: "3.9"
 #
 # Usage:
 #   docker compose up postgres -d
-#   docker compose run agent /data/sample_nem12.csv
-#   docker compose run agent /data/file1.csv /data/file2.csv
+#   docker compose run agent "/data/nem12#assessment001#UNITEDDP#NEMMCO.csv"
+#   docker compose run agent "/data/nem12#assessment001#UNITEDDP#NEMMCO.csv" "/data/nem12#0123456789ABCDEF#TESTMDP1#TESTRETAIL.zip"
 
 services:
 
@@ -59,8 +59,8 @@ services:
       - ./output:/output         # SQL output (writable)
     ports:
       - "8000:8000"              # Prometheus metrics
-    # Default: run the agent against the sample file (override with docker compose run)
-    command: ["/data/sample_nem12.csv"]
+    # Default: run the agent against the assessment sample file (override with docker compose run)
+    command: ["/data/nem12#assessment001#UNITEDDP#NEMMCO.csv"]
     restart: "no"
 
 volumes:
