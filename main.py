@@ -21,11 +21,12 @@ import argparse
 import os
 import sys
 
+from src.config import settings
 from src.observability.metrics import configure_logging
 
 configure_logging(
-    log_level=os.getenv("LOG_LEVEL", "INFO"),
-    json_output=os.getenv("LOG_FORMAT", "json") == "json",
+    log_level=settings.log_level,
+    json_output=settings.log_format == "json",
 )
 
 import structlog  # noqa: E402 – must import after configure_logging
@@ -75,7 +76,7 @@ def _run_agent(args: argparse.Namespace) -> int:
     """Run the full AI-powered agentic pipeline."""
     from src.agent.meter_reading_agent import MeterReadingAgent
 
-    api_key = os.getenv("ANTHROPIC_API_KEY")
+    api_key = settings.anthropic_api_key
     if not api_key:
         print(
             "ERROR: ANTHROPIC_API_KEY is not set.  "
