@@ -137,10 +137,10 @@ class Settings(BaseSettings):
         init_settings: PydanticBaseSettingsSource,
         env_settings: PydanticBaseSettingsSource,
         dotenv_settings: PydanticBaseSettingsSource,
-        secrets_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
     ) -> Tuple[PydanticBaseSettingsSource, ...]:
         # dotenv (.env) has highest priority; OS env vars are a fallback
-        return dotenv_settings, env_settings, init_settings, secrets_settings
+        return dotenv_settings, env_settings, init_settings, file_secret_settings
 
     @model_validator(mode="after")
     def _validate_log_level(self) -> "Settings":
