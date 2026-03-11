@@ -328,6 +328,70 @@ class PostgresHandler:
         logger.info("postgres.bulk_insert_complete", **result)
         return result
 
+    def atomic_bulk_insert(
+        self,
+        readings: list[MeterReading],
+        batch_size: int = _DEFAULT_BATCH_SIZE,
+    ) -> dict[str, int]:
+        """
+        Insert all readings in a **single PostgreSQL transaction** (ACID-safe).
+
+        Unlike ``bulk_insert`` (parallel batches, separate commits), this method
+        wraps every batch in one connection+transaction:
+          - **Atomicity**   – all batches commit together or all roll back.
+          - **Consistency** – DB constraints enforce NMI/timestamp uniqueness.
+          - **Isolation**   – other sessions see either all or none of the rows.
+          - **Durability**  – PostgreSQL WAL guarantees persistence after commit.
+
+        Use this when processing a single file end-to-end to ensure no partial
+        writes survive a failure mid-file.
+        """
+        if not readings:
+            return {"inserted": 0, "skipped": 0, "failed": 0, "total": 0}
+
+        self.connect()
+
+        batches = [
+            readings[i : i + batch_size]
+            for i in range(0, len(readings), batch_size)
+        ]
+
+        total_inserted = 0
+        total_skipped = 0
+
+        logger.info(
+            "postgres.atomic_insert_start",
+            total=len(readings),
+            batches=len(batches),
+        )
+
+        # Single connection = single transaction; commit once at the end.
+        with self._get_conn() as conn:
+            with conn.cursor() as cur:
+                for batch in batches:
+                    tuples = [
+                        (r.id, r.nmi, r.timestamp, r.consumption) for r in batch
+                    ]
+                    psycopg2.extras.execute_values(
+                        cur,
+                        _INSERT_SQL,
+                        tuples,
+                        template=None,
+                        page_size=len(tuples),
+                    )
+                    inserted = cur.rowcount if cur.rowcount >= 0 else len(tuples)
+                    total_inserted += inserted
+                    total_skipped += len(tuples) - inserted
+
+        result = {
+            "inserted": total_inserted,
+            "skipped": total_skipped,
+            "failed": 0,
+            "total": len(readings),
+        }
+        logger.info("postgres.atomic_insert_complete", **result)
+        return result
+
     def generate_insert_sql(self, readings: list[MeterReading]) -> str:
         """
         Return a string of SQL INSERT statements (no DB connection needed).

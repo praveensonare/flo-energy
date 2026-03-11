@@ -109,7 +109,6 @@ class MeterReadingAgent:
             json_output=settings.log_format == "json",
         )
         return cls(
-            api_key=settings.anthropic_api_key,
             db_handler=PostgresHandler.from_env(),
             notification_service=NotificationService.default(),
             enable_sql_output=settings.enable_sql_output,
