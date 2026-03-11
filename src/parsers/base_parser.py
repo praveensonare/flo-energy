@@ -16,6 +16,8 @@ from typing import Generator
 from src.models.meter_reading import MeterReading
 
 
+# Holds the aggregated output of a single parse() call, including all readings,
+# errors, warnings, NMIs encountered, and the number of lines processed.
 @dataclass
 class ParserResult:
     """Outcome of a parser.parse() call."""
@@ -26,6 +28,8 @@ class ParserResult:
     lines_processed: int = 0
 
 
+# Abstract base class that every file-format parser must subclass.
+# Defines the required interface (detect, stream_readings, parse) and shared helpers.
 class BaseParser(ABC):
     """
     Abstract base for all meter data file parsers.
@@ -43,6 +47,8 @@ class BaseParser(ABC):
     def format_name(self) -> str:
         """Human-readable format identifier, e.g. 'NEM12'."""
 
+    # Inspects the file header to decide whether this parser can handle the file.
+    # Reads only the first line so detection cost is O(1) with respect to file size.
     @classmethod
     @abstractmethod
     def detect(cls, file_path: str) -> bool:
@@ -53,6 +59,8 @@ class BaseParser(ABC):
         in file size.
         """
 
+    # Yields MeterReading objects one at a time from the file without loading it all into memory.
+    # Callers use this when processing files too large to buffer entirely in RAM.
     @abstractmethod
     def stream_readings(self, file_path: str) -> Generator[MeterReading, None, None]:
         """
@@ -62,6 +70,8 @@ class BaseParser(ABC):
         file size – critical for multi-GB NEM12 files.
         """
 
+    # Parses the entire file and returns a single ParserResult with all readings collected.
+    # Prefer stream_readings() for very large files to avoid buffering all data in RAM.
     @abstractmethod
     def parse(self, file_path: str) -> ParserResult:
         """
@@ -76,6 +86,8 @@ class BaseParser(ABC):
     # Shared helpers
     # ------------------------------------------------------------------
 
+    # Returns the size of the given file in bytes using os.stat.
+    # Returns 0 rather than raising if the file cannot be accessed.
     @staticmethod
     def _file_size(file_path: str) -> int:
         """Return file size in bytes, or 0 if the file cannot be stat'd."""
@@ -84,6 +96,8 @@ class BaseParser(ABC):
         except OSError:
             return 0
 
+    # Opens a text file using UTF-8 encoding with BOM stripping for safe line iteration.
+    # Used by subclasses that need raw line access rather than CSV parsing.
     @staticmethod
     def _open_file(file_path: str):
         """

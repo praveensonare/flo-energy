@@ -12,6 +12,8 @@ from enum import Enum
 from typing import Any
 
 
+# Enum of NEM12 quality/method flags that describe the reliability of an interval reading.
+# Each member maps to the single-character code used in the NEM12 300-record.
 class QualityMethod(str, Enum):
     """NEM12 quality/method flags for interval data."""
     ACTUAL = "A"
@@ -21,12 +23,16 @@ class QualityMethod(str, Enum):
     VARIABLE = "V"
     ESTIMATED = "E"
 
+    # Looks up the QualityMethod member whose value matches the given string.
+    # Returns None for unrecognised flag characters rather than raising.
     @classmethod
     def from_str(cls, value: str) -> "QualityMethod | None":
         """Return the matching member, or None for unknown flags."""
         return cls._value2member_map_.get(value)
 
 
+# Immutable dataclass representing a single interval energy reading for one NMI.
+# Validated on construction: NMI must be at most 10 chars and consumption must be non-negative.
 @dataclass(slots=True)
 class MeterReading:
     """
@@ -53,6 +59,8 @@ class MeterReading:
                 f"Consumption cannot be negative: {self.consumption}"
             )
 
+    # Serialises the reading to a plain dictionary with all fields as JSON-safe types.
+    # Timestamps are ISO-8601 strings and Decimal consumption is converted to str.
     def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
@@ -62,11 +70,15 @@ class MeterReading:
             "quality_method": self.quality_method.value if self.quality_method else None,
         }
 
+    # Returns a 4-tuple of (id, nmi, timestamp, consumption) ready for a DB INSERT statement.
+    # Used by the database handler when bulk-inserting readings via executemany.
     def to_sql_tuple(self) -> tuple[str, str, datetime, Decimal]:
         """Return (id, nmi, timestamp, consumption) for DB insertion."""
         return (self.id, self.nmi, self.timestamp, self.consumption)
 
 
+# Groups all interval readings that share an NMI and interval configuration.
+# Corresponds to one 200-record block in a NEM12 file, including its accumulated readings.
 @dataclass
 class NEM12Block:
     """
@@ -85,6 +97,8 @@ class NEM12Block:
         return 1440 // self.interval_length
 
 
+# Tracks the full lifecycle of a single file-parse session, from detection through DB insertion.
+# Stored in memory per session_id so downstream tools can reference parsed data without re-reading.
 @dataclass
 class ParseSession:
     """
@@ -109,6 +123,8 @@ class ParseSession:
     skipped: int = 0
     failed: int = 0
 
+    # Returns a JSON-safe summary dict of the session, capping errors/warnings at 10 items.
+    # Used by agent tools to report session outcomes without overwhelming the response payload.
     def summary(self) -> dict[str, Any]:
         return {
             "session_id": self.session_id,
@@ -129,6 +145,8 @@ class ParseSession:
         }
 
 
+# Holds the outcome of a data-validation pass, including counts of valid, invalid, and duplicate rows.
+# is_valid is False if any hard errors were found; warnings are informational only.
 @dataclass
 class ValidationResult:
     """Result of a data-validation pass."""
@@ -139,6 +157,8 @@ class ValidationResult:
     invalid_count: int = 0
     valid_count: int = 0
 
+    # Serialises the validation result to a plain dictionary for use in API responses or logs.
+    # All fields are included so callers can surface counts and messages without accessing attrs.
     def to_dict(self) -> dict[str, Any]:
         return {
             "is_valid": self.is_valid,

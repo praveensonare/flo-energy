@@ -28,6 +28,8 @@ _PROJECT_ROOT = Path(__file__).parent.parent
 _ENV_FILE = _PROJECT_ROOT / ".env"
 
 
+# Typed, validated application settings loaded from the .env file at the project root.
+# All fields carry defaults so the app starts without any environment configuration.
 class Settings(BaseSettings):
     """
     Typed, validated application settings.
@@ -130,6 +132,8 @@ class Settings(BaseSettings):
     # Source priority: .env file wins over OS environment variables
     # ------------------------------------------------------------------
 
+    # Overrides the Pydantic-settings source priority so .env file wins over OS env vars.
+    # This ensures local developer overrides in .env always take precedence at runtime.
     @classmethod
     def settings_customise_sources(
         cls,

@@ -1,31 +1,17 @@
 """
 LangChain / LangGraph async meter reading agent.
+Replaces the old manual Anthropic agentic loop with create_react_agent.
 
 Architecture
 ------------
-* Uses ``langgraph.prebuilt.create_react_agent`` with ``ChatAnthropic`` as
-  the reasoning model. LangGraph handles the tool-call / tool-result loop
-  automatically, including parallel tool calls when the model requests them.
-
-* ``process_file()`` is an ``async`` coroutine. Multiple files are processed
-  concurrently via ``asyncio.gather()`` in ``process_files()``, with each file
-  running in its own agent instance to avoid shared-state races.
-
-* Tool execution is fully async (see ``langchain_tools.py``):
-    - Blocking I/O (parse, DB writes) runs in a ``ThreadPoolExecutor``.
-    - Session state is protected by ``asyncio.Lock``.
-    - DB writes use ``atomic_bulk_insert`` for ACID guarantees.
-
-* After ``parse_file``, the model is instructed to call ``validate_data`` AND
-  ``generate_sql`` simultaneously. LangGraph processes them concurrently when
-  the model returns both tool calls in a single response turn.
-
-Agentic loop (managed by LangGraph):
-    User message
-      → Claude (emits tool calls)
-        → tool results (async, possibly parallel)
-          → Claude (emits more tool calls or final answer)
-            → … until stop_reason == "end_turn"
+* ``create_react_agent`` builds a LangGraph StateGraph that handles the
+  tool-call / tool-result loop automatically, including parallel tool calls
+  when Claude emits multiple tool_use blocks in a single response turn.
+* ``process_file()`` is a coroutine; ``process_files()`` runs N files
+  concurrently with ``asyncio.gather()``.  Each file gets its own agent
+  invocation so session state is completely isolated.
+* Blocking calls (parse, DB) are offloaded to a ThreadPoolExecutor inside
+  each ``@tool`` function (see langchain_tools.py), keeping the event loop free.
 """
 from __future__ import annotations
 
@@ -54,10 +40,10 @@ _MODEL = "claude-opus-4-6"
 
 _SYSTEM_PROMPT = """\
 You are a Meter Reading ETL Agent. Process Australian energy meter data files \
-(NEM12 / NEM13 format) into PostgreSQL.
+(NEM12 / NEM13 format, supplied as CSV or ZIP) into PostgreSQL.
 
-For each file, call tools in this exact order:
-  1. read_file      – detect format; stop with error notification if file is missing
+For each file call tools in this exact order:
+  1. read_file      – detect format; stop with error notification if file missing
   2. parse_file     – extract all meter readings
   3. validate_data AND generate_sql – call BOTH simultaneously in one turn
   4. write_to_database – atomic insert (one transaction; all-or-nothing)
@@ -66,26 +52,15 @@ For each file, call tools in this exact order:
 Rules:
 - Always end with send_notification.
 - If parse_file returns errors, send a warning notification and continue.
-- validate_data and generate_sql are independent; call them in parallel.
+- validate_data and generate_sql are independent; always call them in parallel.
 - Be concise; focus on tool calls over explanatory text.
 """
 
 
 class LangChainMeterAgent:
     """
-    Async LangGraph agent for NEM12/NEM13 ETL.
-
-    Usage::
-
-        agent = LangChainMeterAgent.from_env()
-
-        # Single file
-        result = await agent.process_file("data/sample.csv")
-
-        # Multiple files processed in parallel
-        results = await agent.process_files(["a.csv", "b.csv", "c.csv"])
-
-        agent.shutdown()
+    Async LangGraph agent for NEM12/NEM13 ETL powered by Claude Opus.
+    Handles both CSV and ZIP input files; processes multiple files concurrently.
     """
 
     def __init__(
@@ -93,19 +68,20 @@ class LangChainMeterAgent:
         api_key: str | None = None,
         metrics_port: int | None = None,
     ) -> None:
+        # Build the LLM client and wire it into a LangGraph ReAct agent with all tools.
+        # api_key falls back to settings.anthropic_api_key when not explicitly provided.
         model = ChatAnthropic(
             model=_MODEL,
             api_key=api_key or settings.anthropic_api_key,
             max_tokens=8192,
         )
-        # create_react_agent builds the LangGraph StateGraph with the
-        # tool-call / tool-result loop wired up automatically.
         self._agent = create_react_agent(
             model,
             ALL_TOOLS,
             prompt=_SYSTEM_PROMPT,
         )
 
+        # MetricsCollector runs as a background daemon thread; stop() is called in shutdown().
         self._metrics_thread = MetricsCollector(
             interval_seconds=15,
             prometheus_port=metrics_port,
@@ -114,7 +90,8 @@ class LangChainMeterAgent:
 
     @classmethod
     def from_env(cls) -> "LangChainMeterAgent":
-        """Construct agent from .env / environment variables."""
+        # Construct agent from .env / environment variables via pydantic-settings.
+        # Configures structured logging before returning so the first log line is formatted.
         configure_logging(
             log_level=settings.log_level,
             json_output=settings.log_format == "json",
@@ -122,14 +99,13 @@ class LangChainMeterAgent:
         return cls(metrics_port=settings.metrics_port or None)
 
     # ------------------------------------------------------------------
-    # Single file
+    # Single-file processing
     # ------------------------------------------------------------------
 
     async def process_file(self, file_path: str) -> dict[str, Any]:
         """
         Run the full ETL pipeline for one file asynchronously.
-
-        Returns a dict with ``file_path``, ``elapsed_s``, and ``summary``.
+        Returns a dict with file_path, elapsed_s, and the agent's final summary text.
         """
         logger.info("agent.process_start", file=file_path)
         start = time.monotonic()
@@ -137,10 +113,10 @@ class LangChainMeterAgent:
         message = (
             f"Process this meter data file: {file_path}\n\n"
             "Steps:\n"
-            "1. read_file → detect format\n"
+            "1. read_file → detect format (CSV or ZIP both supported)\n"
             "2. parse_file → extract readings\n"
-            "3. validate_data + generate_sql → run BOTH in parallel\n"
-            "4. write_to_database → atomic insert\n"
+            "3. validate_data + generate_sql → call BOTH in parallel\n"
+            "4. write_to_database → atomic insert (table auto-created if missing)\n"
             "5. send_notification → report outcome\n"
         )
         if settings.enable_sql_output and settings.sql_output_path:
@@ -149,10 +125,9 @@ class LangChainMeterAgent:
         response = await self._agent.ainvoke(
             {"messages": [("user", message)]}
         )
-
         elapsed = time.monotonic() - start
 
-        # Extract the final AI text from the message history
+        # Walk the message history backwards to find the last non-empty AI text.
         summary = ""
         for msg in reversed(response["messages"]):
             content = getattr(msg, "content", "")
@@ -161,12 +136,7 @@ class LangChainMeterAgent:
                 break
 
         get_metrics().files_processed.labels(format="NEM", status="completed").inc()
-
-        logger.info(
-            "agent.process_complete",
-            file=file_path,
-            elapsed_s=round(elapsed, 2),
-        )
+        logger.info("agent.process_complete", file=file_path, elapsed_s=round(elapsed, 2))
 
         return {
             "file_path": file_path,
@@ -175,24 +145,18 @@ class LangChainMeterAgent:
         }
 
     # ------------------------------------------------------------------
-    # Multiple files in parallel
+    # Parallel multi-file processing
     # ------------------------------------------------------------------
 
     async def process_files(self, file_paths: list[str]) -> list[dict[str, Any]]:
         """
-        Process multiple files concurrently using ``asyncio.gather``.
-
-        Each file runs its own independent agent loop. Race conditions between
-        files are prevented because each file gets its own ``ParseSession``
-        (keyed by session_id) in the shared session store, and the store is
-        guarded by ``asyncio.Lock`` in ``langchain_tools.py``.
-
-        Failed files return ``{"file_path": ..., "error": ...}`` so one bad
-        file does not abort the others (``return_exceptions=True``).
+        Process multiple files concurrently using asyncio.gather.
+        Each file runs its own agent loop; a failure in one does not abort the others.
         """
         logger.info("agent.batch_start", file_count=len(file_paths))
 
         tasks = [self.process_file(fp) for fp in file_paths]
+        # return_exceptions=True isolates failures so one bad file doesn't kill the batch.
         raw_results = await asyncio.gather(*tasks, return_exceptions=True)
 
         results: list[dict[str, Any]] = []
@@ -203,11 +167,8 @@ class LangChainMeterAgent:
             else:
                 results.append(outcome)  # type: ignore[arg-type]
 
-        logger.info(
-            "agent.batch_complete",
-            total=len(file_paths),
-            failed=sum(1 for r in results if "error" in r),
-        )
+        failed = sum(1 for r in results if "error" in r)
+        logger.info("agent.batch_complete", total=len(file_paths), failed=failed)
         return results
 
     # ------------------------------------------------------------------
@@ -215,6 +176,6 @@ class LangChainMeterAgent:
     # ------------------------------------------------------------------
 
     def shutdown(self) -> None:
-        """Stop background metrics thread."""
+        # Signal the background metrics thread to stop; call before process exit.
         self._metrics_thread.stop()
         logger.info("agent.shutdown")
